@@ -51,6 +51,7 @@ sub run {
     my $vf = $transcript_variation_allele->variation_feature;
     my $tv = $transcript_variation_allele->transcript_variation;
     
+    my @consequences = map { $_->SO_term } @{ $transcript_variation_allele->get_all_OverlapConsequences };
     my $genic_variant = !("upstream_gene_variant" ~~ @consequences || "downstream_gene_variant" ~~ @consequences);
     my $splice_lof = "splice_acceptor_variant" ~~ @consequences || "splice_donor_variant" ~~ @consequences;
     
@@ -58,7 +59,7 @@ sub run {
     if ($genic_variant && !$splice_lof) {
         my ($dd, $ad) = get_dist_to_splice_sites($tv, $vf);        
         $donorDist = $dd if $dd ne 'NA';
-        $acceptorDist = $da if $ad ne 'NA';
+        $acceptorDist = $ad if $ad ne 'NA';
     }
     return { donorDist => $donorDist, acceptorDist => $acceptorDist };
 }
@@ -75,25 +76,25 @@ sub get_dist_to_splice_sites {
     my ($dd, $da);
     if ($tv->exon_number) {
         my @exons = @{ $tr->get_all_Exons };
-        my ($exon_num, $number_of_exons) = split /\//, ($transcript_variation->exon_number);
+        my ($exon_num, $number_of_exons) = split /\//, ($tv->exon_number);
         my $exon = $exons[$exon_num - 1];
         $dd = ($strand == 1) ? $slice->{end} - $exon->{end} - 1 : $exon->{start} - $slice->{start} - 1;
         $da = ($strand == 1) ? $slice->{start} - $exon->{start} + 1 : $exon->{end} - $slice->{end} + 1;
         if ($exon_num == 1) {
-            return (return_val('DONOR', $dd), 'NA');
+            return (return_val($dd), 'NA');
         } elsif ($exon_num == $number_of_exons) {
-            return ('NA', return_val('ACCEPTOR', $da));
+            return ('NA', return_val($da));
         } else {
-            return (return_val('DONOR', $dd), return_val('ACCEPTOR', $da));
+            return (return_val($dd), return_val($da));
         }
     } 
     elsif ($tv->intron_number) {
         my @introns = @{ $tr->get_all_Introns };
-        my ($intron_num, $number_of_introns) = split /\//, ($transcript_variation->intron_number);
+        my ($intron_num, $number_of_introns) = split /\//, ($tv->intron_number);
         my $intron = $introns[$intron_num - 1];
         $dd = ($strand == 1) ? $slice->{start} - $intron->{start} + 1 : $intron->{end} - $slice->{end} + 1;
         $da = ($strand == 1) ? $slice->{end} - $intron->{end} - 1 : $intron->{start} - $slice->{start} - 1;
-        return (return_val('DONOR', $dd), return_val('ACCEPTOR', $da));
+        return (return_val($dd), return_val($da));
     }
     else {
         return check_all_junctions($tr, $slice, $strand);
@@ -101,12 +102,8 @@ sub get_dist_to_splice_sites {
 }
 
 sub return_val {
-    my ($sstype, $dist) = @_[0..1];
-    if ($dist < 0) {
-        return $sstype . $dist;
-    } else {
-        return $sstype . '+' . $dist;
-    }
+    my $dist = shift;
+    return ($dist < 0) ? $dist : '+' . $dist;
 }
 
 
