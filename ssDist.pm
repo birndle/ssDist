@@ -81,9 +81,9 @@ sub get_dist_to_splice_sites {
         $dd = ($strand == 1) ? $slice->{end} - $exon->{end} - 1 : $exon->{start} - $slice->{start} - 1;
         $da = ($strand == 1) ? $slice->{start} - $exon->{start} + 1 : $exon->{end} - $slice->{end} + 1;
         if ($exon_num == 1) {
-            return (return_val($dd), 'NA');
+            return (return_val($dd), 'FIRST_EXON');
         } elsif ($exon_num == $number_of_exons) {
-            return ('NA', return_val($da));
+            return ('LAST_EXON', return_val($da));
         } else {
             return (return_val($dd), return_val($da));
         }
