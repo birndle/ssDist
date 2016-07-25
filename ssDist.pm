@@ -15,7 +15,7 @@
 
 =head1 DESCRIPTION
 
- A VEP plugin that writes the distance to nearest donor and acceptor splice sites for a given transcript.
+ A VEP plugin that computes the distance to the nearest donor and acceptor splice sites.
 
 =cut
 
@@ -50,24 +50,22 @@ sub run {
     my ($self, $transcript_variation_allele) = @_;
     my $vf = $transcript_variation_allele->variation_feature;
     my $tv = $transcript_variation_allele->transcript_variation;
+    my $allele = $transcript_variation_allele->allele_string();
     
     my @consequences = map { $_->SO_term } @{ $transcript_variation_allele->get_all_OverlapConsequences };
     my $genic_variant = !("upstream_gene_variant" ~~ @consequences || "downstream_gene_variant" ~~ @consequences);
     my $splice_lof = "splice_acceptor_variant" ~~ @consequences || "splice_donor_variant" ~~ @consequences;
-    
-    my ($donorDist, $acceptorDist);
-    if ($genic_variant && !$splice_lof) {
+    my $indel = $allele =~ "-";
+    if ($genic_variant && !($splice_lof && $indel)) {
         my ($dd, $ad) = get_dist_to_splice_sites($tv, $vf);        
-        $donorDist = $dd if $dd ne 'NA';
-        $acceptorDist = $ad if $ad ne 'NA';
+        return { donorDist => $dd, acceptorDist => $ad };
     }
-    return { donorDist => $donorDist, acceptorDist => $acceptorDist };
+    return {};
 }
 
 
 sub get_dist_to_splice_sites {
-    my $tv = shift;
-    my $vf = shift;
+    my ($tv, $vf) = @_[0..1];
 
     my $slice = $vf->feature_Slice();
     my $tr = $tv->transcript;
@@ -78,40 +76,51 @@ sub get_dist_to_splice_sites {
         my @exons = @{ $tr->get_all_Exons };
         my ($exon_num, $number_of_exons) = split /\//, ($tv->exon_number);
         my $exon = $exons[$exon_num - 1];
-        $dd = ($strand == 1) ? $slice->{end} - $exon->{end} - 1 : $exon->{start} - $slice->{start} - 1;
-        $da = ($strand == 1) ? $slice->{start} - $exon->{start} + 1 : $exon->{end} - $slice->{end} + 1;
-        if ($exon_num == 1) {
-            return (return_val($dd), 'FIRST_EXON');
-        } elsif ($exon_num == $number_of_exons) {
-            return ('LAST_EXON', return_val($da));
+        
+        if ($strand == 1) {
+            $dd = $slice->{end} - $exon->{end} - 1;
+            $da = $slice->{start} - $exon->{start} + 1;
         } else {
-            return (return_val($dd), return_val($da));
+            $dd = $exon->{start} - $slice->{start} - 1;
+            $da = $exon->{end} - $slice->{end} + 1;
         }
-    } 
-    elsif ($tv->intron_number) {
+
+        if ($exon_num == 1) {
+            $da = 'FIRST_EXON';
+        } elsif ($exon_num == $number_of_exons) {
+            $dd = 'LAST_EXON';
+        }
+
+    } elsif ($tv->intron_number) {
         my @introns = @{ $tr->get_all_Introns };
         my ($intron_num, $number_of_introns) = split /\//, ($tv->intron_number);
         my $intron = $introns[$intron_num - 1];
-        $dd = ($strand == 1) ? $slice->{start} - $intron->{start} + 1 : $intron->{end} - $slice->{end} + 1;
-        $da = ($strand == 1) ? $slice->{end} - $intron->{end} - 1 : $intron->{start} - $slice->{start} - 1;
-        return (return_val($dd), return_val($da));
+
+        if ($strand == 1) {
+            $dd = $slice->{start} - $intron->{start} + 1;
+            $da = $slice->{end} - $intron->{end} - 1;
+        } else {
+            $dd = $intron->{end} - $slice->{end} + 1;
+            $da = $intron->{start} - $slice->{start} - 1;
+        }
     }
-    else {
-        return check_all_junctions($tr, $slice, $strand);
+    
+    else { # edge case: insertion occurring right at the splice junction
+        ($dd, $da) = check_for_insertion_at_junction($tr, $slice);
     }
+    return ($dd, $da);
 }
 
-sub return_val {
-    my $dist = shift;
-    return ($dist < 0) ? $dist : '+' . $dist;
-}
 
-
-sub check_all_junctions {
-    my ($tr, $slice, $strand, $intron) = @_[0..3];
-    my $i = 0;
+sub check_for_insertion_at_junction {
+    my ($tr, $slice) = @_[0..1];
+    my $strand = $tr->strand();
     my ($five_start, $five_end, $three_start, $three_end);
-    foreach my $intron(@{$tr->get_all_Introns}) {
+    my @exons = @{ $tr->get_all_Exons };
+    my @introns = @{ $tr->get_all_Introns };
+    my $num_introns = scalar @introns;
+    for (my $i=0; $i < $num_introns; $i++)  {
+        my $intron = $introns[$i];
         if ($strand > 0) {
             ($five_start, $five_end) = ($intron->start - 3, $intron->start + 5);
             ($three_start, $three_end) = ($intron->end - 19, $intron->end + 3);
@@ -120,14 +129,19 @@ sub check_all_junctions {
             ($three_start, $three_end) = ($intron->start - 3, $intron->start + 19);
         }
         if (overlap($slice->start, $slice->end, $five_start, $five_end)) {
-            return ('INSERTION_AT_DONOR', 'NA');
+            my $exon = $exons[$i];
+            my $exon_length = $exon->end - $exon->start + 1;
+            my $da = ($i == 0) ? 'FIRST_EXON' : $exon_length;
+            return (0, $da);
         }
         if (overlap($slice->start, $slice->end, $three_start, $three_end)) {
-            return ('NA', 'INSERTION_AT_ACCEPTOR');
+            my $exon = $exons[$i + 1];
+            my $exon_length = $exon->end - $exon->start + 1;
+            my $dd = ($i == $num_introns - 1) ? 'LAST_EXON' : -$exon_length;
+            return ($dd, 0);
         }
-        $i++;
     }
-    return ('NA', 'NA');
+    return ('') x 2;
 }
 
 
